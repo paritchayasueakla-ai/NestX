@@ -295,9 +295,12 @@ st.markdown(f"""
 <style>
     @import url('https://fonts.googleapis.com/css2?family=Prompt:wght@400;500;600;700&display=swap');
 
-    /* ซ่อนปุ่ม Deploy และเมนู ⋮ ของ Streamlit (เห็นเฉพาะคนสร้าง: เปลี่ยน display เป็น flex เพื่อแสดง) */
+    /* ซ่อนปุ่ม Deploy, เมนู ⋮ มุมขวาบน และ Footer ของ Streamlit ให้ดูเหมือนแอปมือถือแท้ๆ */
     [data-testid="stDeployButton"],
-    [data-testid="stToolbarActions"] {{
+    [data-testid="stToolbarActions"],
+    [data-testid="stMainMenu"],
+    [data-testid="stStatusWidget"],
+    footer {{
         display: none !important;
     }}
 
@@ -412,9 +415,11 @@ st.markdown(f"""
         border-radius: 12px !important;
         font-weight: 600 !important;
         font-family: 'Prompt', sans-serif !important;
-        white-space: pre-wrap !important;
-        line-height: 1.45 !important;
-        padding: 10px 16px !important;
+        white-space: normal !important;
+        height: auto !important;
+        min-height: 44px !important;
+        line-height: 1.4 !important;
+        padding: 10px 14px !important;
         transition: all 0.2s ease-in-out !important;
         box-shadow: {'0 2px 8px rgba(0,0,0,0.25)' if is_dark else '0 1px 4px rgba(0,0,0,0.06)'} !important;
     }}
@@ -428,6 +433,11 @@ st.markdown(f"""
         color: {btn_text} !important;
         font-family: 'Prompt', sans-serif !important;
         font-weight: 600 !important;
+        white-space: normal !important;
+        overflow: visible !important;
+        text-overflow: unset !important;
+        word-break: break-word !important;
+        line-height: 1.38 !important;
     }}
     button:hover,
     button[data-testid*="BaseButton"]:hover,
@@ -668,6 +678,98 @@ st.markdown(f"""
         height: 100%;
         box-shadow: 0 3px 12px rgba(15, 23, 42, {'0.25' if is_dark else '0.04'});
     }}
+    .device-row {{
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 6px;
+        font-weight: 600;
+    }}
+
+    /* 📱 Responsive Mobile UI (สำหรับหน้าจอมือถือและการเปิดผ่าน LINE / Instagram / Safari / Chrome) */
+    @media (max-width: 768px) {{
+        .block-container,
+        [data-testid="stAppViewBlockContainer"] {{
+            padding: 2.2rem 0.75rem 2.5rem 0.75rem !important;
+            max-width: 100% !important;
+        }}
+        .top-hero {{
+            flex-direction: column !important;
+            align-items: flex-start !important;
+            gap: 10px !important;
+            padding: 14px 16px !important;
+            margin-bottom: 14px !important;
+        }}
+        .farm-title {{
+            font-size: 1.22rem !important;
+            line-height: 1.35 !important;
+        }}
+        .farm-subtitle {{
+            font-size: 0.8rem !important;
+            line-height: 1.5 !important;
+        }}
+        .sensor-card {{
+            padding: 14px 12px !important;
+            margin-bottom: 10px !important;
+        }}
+        .sensor-icon {{
+            font-size: 1.6rem !important;
+            margin-bottom: 4px !important;
+        }}
+        .sensor-number {{
+            font-size: 2.15rem !important;
+            margin-bottom: 6px !important;
+        }}
+        .sensor-unit {{
+            font-size: 1rem !important;
+        }}
+        .info-card {{
+            padding: 14px !important;
+            margin-bottom: 12px !important;
+        }}
+        div:has(> [data-testid="stVerticalBlockBorderWrapper"]),
+        [data-testid="stVerticalBlockBorderWrapper"],
+        div[class*="st-key-"] {{
+            padding: 14px 14px !important;
+            border-radius: 14px !important;
+        }}
+        .stTabs [data-baseweb="tab-list"] {{
+            overflow-x: auto !important;
+            flex-wrap: nowrap !important;
+            -webkit-overflow-scrolling: touch !important;
+            gap: 4px !important;
+            padding-bottom: 8px !important;
+            scrollbar-width: none !important;
+        }}
+        .stTabs [data-baseweb="tab-list"]::-webkit-scrollbar {{
+            display: none !important;
+        }}
+        .stTabs [data-baseweb="tab"] {{
+            padding: 6px 12px !important;
+            font-size: 0.88rem !important;
+            white-space: nowrap !important;
+            flex-shrink: 0 !important;
+        }}
+        button,
+        [data-testid="stButton"] button,
+        .stButton > button {{
+            padding: 10px 12px !important;
+            font-size: 0.88rem !important;
+        }}
+        button p,
+        button span,
+        [data-testid="stButton"] button p {{
+            font-size: 0.88rem !important;
+        }}
+        h3, .stMarkdown h3 {{
+            font-size: 1.18rem !important;
+        }}
+        h5, .stMarkdown h5 {{
+            font-size: 0.98rem !important;
+            line-height: 1.4 !important;
+        }}
+    }}
 </style>
 """, unsafe_allow_html=True)
 
@@ -842,15 +944,15 @@ night_badge = "<span style='background:#4338ca; color:#ffffff; padding:4px 12px;
 st.markdown(f"""
 <div class='top-hero'>
     <div>
-        <div class='farm-title'>🐣 {user_pref.get('farm_name', 'Smart Baby Bird Brooder')} {night_badge}</div>
+        <div class='farm-title'>🐣 {html.escape(str(user_pref.get('farm_name', 'Smart Baby Bird Brooder')))} {night_badge}</div>
         <div class='farm-subtitle'>
-            🎯 <b>อุณหภูมิเป้าหมาย:</b> {t_min:.1f} - {t_max:.1f} °C &nbsp;|&nbsp; 
-            💧 <b>ความชื้นเป้าหมาย:</b> {h_min} - {h_max} %RH &nbsp;|&nbsp; 
-            📷 <b>ตรวจพบนกในตู้:</b> 2 ตัว
+            🎯 <b>อุณหภูมิ:</b> {t_min:.1f}-{t_max:.1f}°C &nbsp;|&nbsp; 
+            💧 <b>ความชื้น:</b> {h_min}-{h_max}%RH &nbsp;|&nbsp; 
+            📷 <b>นกในตู้:</b> 2 ตัว
         </div>
     </div>
-    <div style='display:flex; gap:10px; align-items:center;'>
-        <div style='background: {"rgba(34, 197, 94, 0.15)" if "อัตโนมัติ" in op_mode else "rgba(245, 158, 11, 0.15)"}; color: {"#22c55e" if "อัตโนมัติ" in op_mode else "#f59e0b"}; padding: 6px 14px; border-radius: 20px; font-weight: 600; font-size: 0.88rem; border: 1px solid {"#22c55e" if "อัตโนมัติ" in op_mode else "#f59e0b"};'>
+    <div style='display:flex; gap:10px; align-items:center; flex-wrap:wrap;'>
+        <div style='background: {"rgba(34, 197, 94, 0.15)" if "อัตโนมัติ" in op_mode else "rgba(245, 158, 11, 0.15)"}; color: {"#22c55e" if "อัตโนมัติ" in op_mode else "#f59e0b"}; padding: 5px 12px; border-radius: 20px; font-weight: 600; font-size: 0.84rem; border: 1px solid {"#22c55e" if "อัตโนมัติ" in op_mode else "#f59e0b"};'>
             {op_mode}
         </div>
     </div>
@@ -858,14 +960,14 @@ st.markdown(f"""
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 7. แถบเมนูหลัก 5 แท็บ (เพิ่มแท็บบัญชี & การเชื่อมต่อ แบบ Discord Style)
+# 7. แถบเมนูหลัก 5 แท็บ (กระชับ อ่านง่ายทั้งบนคอมและมือถือ)
 # ==========================================
 tab_dash, tab_history, tab_sim, tab_account, tab_settings = st.tabs([
-    "🏠 แดชบอร์ดภาพรวม",
-    "📈 ประวัติและกราฟแนวโน้ม",
-    "🧪 ห้องทดลอง AI Simulator",
-    "👤 บัญชี & การเชื่อมต่อ (Connections)",
-    "⚙️ ตั้งค่าระบบ & รายงาน"
+    "🏠 แดชบอร์ด",
+    "📈 กราฟสถิติ",
+    "🧪 AI Simulator",
+    "👤 บัญชี & แจ้งเตือน",
+    "⚙️ ตั้งค่าระบบ"
 ])
 
 # --------------------------------------------------------------------------
@@ -932,57 +1034,57 @@ with tab_dash:
 
     with row2_left:
         st.markdown(f"""<div class='info-card'>
-<div style='display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;'>
-<span style='font-weight:700; font-size:1.1rem;'>📷 กล้อง AI ตรวจจับลูกนก (Live Stream)</span>
+<div class='device-row' style='margin-bottom:12px;'>
+<span style='font-weight:700; font-size:1.05rem;'>📷 กล้อง AI ตรวจจับลูกนก</span>
 <span style='background:#ef4444; color:#ffffff; padding:2px 10px; border-radius:12px; font-size:0.75rem; font-weight:700;'>LIVE</span>
 </div>
-<div style='background:#000000; border-radius:12px; padding:25px; text-align:center; min-height:220px; display:flex; flex-direction:column; justify-content:center; align-items:center; border:1px solid #334155;'>
-<div style='font-size:3.5rem; margin-bottom:8px;'>🐣 🐣</div>
-<div style='color:#22c55e; font-weight:700; font-size:1.1rem;'>YOLOv8 ตรวจพบลูกนกในตู้ 2 ตัว</div>
-<div style='color:#94a3b8; font-size:0.85rem; margin-top:4px;'>สถานะ: นอนหลับสบาย อุณหภูมิอบอุ่นพอเหมาะ (Normal Huddle)</div>
-<div style='margin-top:14px; display:flex; gap:8px;'>
-<span style='background:rgba(34,197,94,0.2); color:#22c55e; padding:3px 10px; border-radius:8px; font-size:0.78rem;'>Bird #1: 38.2g (98%)</span>
-<span style='background:rgba(56,189,248,0.2); color:#38bdf8; padding:3px 10px; border-radius:8px; font-size:0.78rem;'>Bird #2: 40.3g (97%)</span>
+<div style='background:#000000; border-radius:12px; padding:20px 14px; text-align:center; min-height:200px; display:flex; flex-direction:column; justify-content:center; align-items:center; border:1px solid #334155;'>
+<div style='font-size:3rem; margin-bottom:8px;'>🐣 🐣</div>
+<div style='color:#22c55e; font-weight:700; font-size:1.02rem;'>YOLOv8 ตรวจพบลูกนกในตู้ 2 ตัว</div>
+<div style='color:#94a3b8; font-size:0.82rem; margin-top:4px;'>สถานะ: นอนหลับสบาย อุณหภูมิอบอุ่นพอเหมาะ</div>
+<div style='margin-top:12px; display:flex; gap:8px; flex-wrap:wrap; justify-content:center;'>
+<span style='background:rgba(34,197,94,0.2); color:#22c55e; padding:3px 10px; border-radius:8px; font-size:0.76rem;'>Bird #1: 38.2g (98%)</span>
+<span style='background:rgba(56,189,248,0.2); color:#38bdf8; padding:3px 10px; border-radius:8px; font-size:0.76rem;'>Bird #2: 40.3g (97%)</span>
 </div>
 </div>
-<div style='font-size:0.82rem; color:{sub_color}; margin-top:10px;'>
+<div style='font-size:0.8rem; color:{sub_color}; margin-top:10px;'>
 กล้อง Pi Camera 3 ความละเอียด 1080p วิเคราะห์ภาพและพฤติกรรมอัตโนมัติ
 </div>
 </div>""", unsafe_allow_html=True)
 
     with row2_right:
         st.markdown(f"""<div class='info-card'>
-<div style='font-weight:700; font-size:1.1rem; margin-bottom:14px;'>🎛️ สถานะอุปกรณ์ควบคุมอัตโนมัติ</div>
+<div style='font-weight:700; font-size:1.05rem; margin-bottom:12px;'>🎛️ สถานะอุปกรณ์ควบคุมอัตโนมัติ</div>
 <div style='background:{metric_bg}; border-radius:10px; padding:12px 14px; margin-bottom:10px;'>
-<div style='display:flex; justify-content:space-between; font-weight:600;'>
+<div class='device-row'>
 <span>💡 หลอดไฟกกความร้อน</span>
-<span style='color:#f97316;'>กำลังทำงาน 35%</span>
+<span style='color:#f97316;'>ทำงาน 35%</span>
 </div>
-<div style='font-size:0.82rem; color:{sub_color}; margin-top:3px;'>ระบบหรี่ไฟ PID เพื่อรักษาอุณหภูมิให้นิ่ง ไม่กระชากไฟ</div>
+<div style='font-size:0.8rem; color:{sub_color}; margin-top:3px;'>ระบบหรี่ไฟ PID รักษาอุณหภูมิให้นิ่ง ไม่กระชากไฟ</div>
 </div>
 <div style='background:{metric_bg}; border-radius:10px; padding:12px 14px; margin-bottom:10px;'>
-<div style='display:flex; justify-content:space-between; font-weight:600;'>
+<div class='device-row'>
 <span>🌀 พัดลมดูดระบายอากาศ</span>
-<span style='color:#38bdf8;'>หมุนต่อเนื่อง 20%</span>
+<span style='color:#38bdf8;'>ต่อเนื่อง 20%</span>
 </div>
-<div style='font-size:0.82rem; color:{sub_color}; margin-top:3px;'>ระบายกลิ่นมูลและควบคุมความชื้นส่วนเกิน</div>
+<div style='font-size:0.8rem; color:{sub_color}; margin-top:3px;'>ระบายกลิ่นมูลและควบคุมความชื้นส่วนเกิน</div>
 </div>
 <div style='background:{metric_bg}; border-radius:10px; padding:12px 14px;'>
-<div style='display:flex; justify-content:space-between; font-weight:600;'>
+<div class='device-row'>
 <span>⚡ อัตราการใช้ไฟเฉลี่ย</span>
-<span style='color:#22c55e;'>38.5 W (~4.1 บาท/วัน)</span>
+<span style='color:#22c55e;'>38.5W (~4.1 บ./วัน)</span>
 </div>
-<div style='font-size:0.82rem; color:{sub_color}; margin-top:3px;'>ประหยัดไฟขึ้น 35% เมื่อเทียบกับตู้กกแบบตัดต่อธรรมดา</div>
+<div style='font-size:0.8rem; color:{sub_color}; margin-top:3px;'>ประหยัดไฟขึ้น 35% เทียบกับระบบตัดต่อธรรมดา</div>
 </div>
 </div>""", unsafe_allow_html=True)
 
-    st.markdown("<div style='height:20px;'></div>", unsafe_allow_html=True)
+    st.markdown("<div style='height:16px;'></div>", unsafe_allow_html=True)
 
     # --- แถวที่ 3: ปุ่มลัดเลือกสูตรการกกสำเร็จรูป (1-Click Presets) ---
     st.markdown("##### 🌟 ปุ่มลัดเลือกสูตรการกกสำเร็จรูป (คลิกเดียว ปรับค่าเป้าหมายอัตโนมัติ)")
     p_col1, p_col2, p_col3 = st.columns(3)
     with p_col1:
-        if st.button("🐣 สูตรแรกเกิด (1-3 วัน)\nเป้าหมาย: 36.5 - 37.2 °C (60% RH)", use_container_width=True):
+        if st.button("🐣 แรกเกิด (1-3 วัน) • 36.5-37.2°C", use_container_width=True):
             user_pref.update({"temp_min": 36.5, "temp_max": 37.2, "hum_min": 55, "hum_max": 65})
             save_pref(user_pref)
             st.toast("✅ ปรับเป้าหมายเป็นสูตรลูกนกแรกเกิดสำเร็จ! (36.5 - 37.2 °C)")
@@ -990,7 +1092,7 @@ with tab_dash:
             st.rerun()
 
     with p_col2:
-        if st.button("🪶 สูตรเริ่มแตกขนหนาม (4-7 วัน)\nเป้าหมาย: 34.0 - 35.5 °C (55% RH)", use_container_width=True):
+        if st.button("🪶 แตกขนหนาม (4-7 วัน) • 34.0-35.5°C", use_container_width=True):
             user_pref.update({"temp_min": 34.0, "temp_max": 35.5, "hum_min": 50, "hum_max": 60})
             save_pref(user_pref)
             st.toast("✅ ปรับเป้าหมายเป็นสูตรแตกขนหนามสำเร็จ! (34.0 - 35.5 °C)")
@@ -998,7 +1100,7 @@ with tab_dash:
             st.rerun()
 
     with p_col3:
-        if st.button("🦜 สูตรขนคลุมตัว (8+ วัน)\nเป้าหมาย: 31.0 - 33.0 °C (50% RH)", use_container_width=True):
+        if st.button("🦜 ขนคลุมตัว (8+ วัน) • 31.0-33.0°C", use_container_width=True):
             user_pref.update({"temp_min": 31.0, "temp_max": 33.0, "hum_min": 45, "hum_max": 55})
             save_pref(user_pref)
             st.toast("✅ ปรับเป้าหมายเป็นสูตรขนคลุมตัวสำเร็จ! (31.0 - 33.0 °C)")
