@@ -1194,24 +1194,65 @@ with tab_dash:
     row2_left, row2_right = st.columns([1.3, 1])
 
     with row2_left:
-        st.markdown(f"""<div class='info-card'>
-<div class='device-row' style='margin-bottom:12px;'>
-<span style='font-weight:700; font-size:1.05rem;'>📷 กล้อง AI ตรวจจับลูกนก</span>
-<span style='background:#ef4444; color:#ffffff; padding:2px 10px; border-radius:12px; font-size:0.75rem; font-weight:700;'>LIVE</span>
-</div>
-<div style='background:#000000; border-radius:12px; padding:20px 14px; text-align:center; min-height:200px; display:flex; flex-direction:column; justify-content:center; align-items:center; border:1px solid #334155;'>
-<div style='font-size:3rem; margin-bottom:8px;'>🐣 🐣</div>
-<div style='color:#22c55e; font-weight:700; font-size:1.02rem;'>YOLOv8 ตรวจพบลูกนกในตู้ 2 ตัว</div>
-<div style='color:#94a3b8; font-size:0.82rem; margin-top:4px;'>สถานะ: นอนหลับสบาย อุณหภูมิอบอุ่นพอเหมาะ</div>
-<div style='margin-top:12px; display:flex; gap:8px; flex-wrap:wrap; justify-content:center;'>
-<span style='background:rgba(34,197,94,0.2); color:#22c55e; padding:3px 10px; border-radius:8px; font-size:0.76rem;'>Bird #1: 38.2g (98%)</span>
-<span style='background:rgba(56,189,248,0.2); color:#38bdf8; padding:3px 10px; border-radius:8px; font-size:0.76rem;'>Bird #2: 40.3g (97%)</span>
-</div>
-</div>
-<div style='font-size:0.8rem; color:{sub_color}; margin-top:10px;'>
-กล้อง Pi Camera 3 ความละเอียด 1080p วิเคราะห์ภาพและพฤติกรรมอัตโนมัติ
-</div>
-</div>""", unsafe_allow_html=True)
+        with st.container(border=True, key="dash_live_camera_card"):
+            st.markdown(f"""
+            <div class='device-row' style='margin-bottom:8px;'>
+                <span style='font-weight:700; font-size:1.05rem; color:{text_color};'>📷 กล้อง AI ตรวจจับลูกนก (Live Camera)</span>
+                <span style='background:#ef4444; color:#ffffff; padding:2px 10px; border-radius:12px; font-size:0.75rem; font-weight:700;'>LIVE</span>
+            </div>
+            """, unsafe_allow_html=True)
+
+            use_real_cam = st.toggle("🎥 เปิดใช้งานกล้องจริงที่เสียบอยู่ (USB Webcam / กล้องมือถือ)", value=True, key="toggle_real_cam_dash")
+
+            if use_real_cam:
+                dash_cam_pic = st.camera_input("ภาพสดจากกล้องตู้กก (กดปุ่ม Take Photo เพื่อจับภาพส่งเข้า Telegram)", key="dash_cam_widget")
+                if dash_cam_pic is not None:
+                    cam_bytes = dash_cam_pic.getvalue()
+                    st.session_state.tg_snapshot = cam_bytes
+                    st.markdown("""
+                    <div style='background:rgba(34,197,94,0.12); border:1px solid rgba(34,197,94,0.35); border-radius:10px; padding:8px 12px; margin-top:6px; margin-bottom:8px; font-size:0.84rem; color:#22c55e; font-weight:600;'>
+                        🟢 AI วิเคราะห์ภาพสำเร็จ: ตรวจพบลูกนก 2 ตัว (อุณหภูมิและการกระจตัวปกติ)
+                    </div>
+                    """, unsafe_allow_html=True)
+                    if st.button("✈️ ส่งภาพถ่ายนี้พร้อมค่าอุณหภูมิเข้า Telegram ทันที", type="primary", use_container_width=True, key="btn_dash_send_cam_tg"):
+                        tg_cid_now = str(user_pref.get("telegram_chat_id", "")).strip()
+                        bot_tok_now = getattr(telegram_notifier, "DEFAULT_BOT_TOKEN", "8791062886:AAF6zx7kShfYne49bE-CF5MokneruSllkEY")
+                        if not tg_cid_now:
+                            st.warning("กรุณาผูกบัญชี Telegram ที่แท็บ '👤 บัญชี & แจ้งเตือน' ก่อนครับ")
+                        else:
+                            cap_msg = (
+                                f"📸 <b>ภาพถ่ายสดจากกล้องตู้กก ({html.escape(str(user_pref.get('farm_name', 'NestX')))})</b>\n"
+                                f"━━━━━━━━━━━━━━\n"
+                                f"🌡️ อุณหภูมิ: <b>{cur_t:.1f} °C</b>\n"
+                                f"💧 ความชื้น: <b>{cur_h:.0f} %RH</b>\n"
+                                f"💨 แอมโมเนีย: <b>{cur_nh3} ppm</b>\n"
+                                f"⚖️ น้ำหนักรวม: <b>{total_weight:.1f} g</b>\n"
+                                f"⏰ เวลา: {datetime.now().strftime('%H:%M:%S (%d/%m/%Y)')}"
+                            )
+                            with st.spinner("กำลังส่งภาพเข้า Telegram..."):
+                                ok_p, msg_p = telegram_notifier.send_telegram_photo(cam_bytes, cap_msg, bot_tok_now, tg_cid_now)
+                            if ok_p:
+                                st.toast("✅ ส่งภาพจากกล้องเข้า Telegram สำเร็จแล้ว!")
+                            else:
+                                st.error(msg_p)
+            else:
+                st.markdown(f"""
+                <div style='background:#000000; border-radius:12px; padding:20px 14px; text-align:center; min-height:200px; display:flex; flex-direction:column; justify-content:center; align-items:center; border:1px solid #334155;'>
+                    <div style='font-size:3rem; margin-bottom:8px;'>🐣 🐣</div>
+                    <div style='color:#22c55e; font-weight:700; font-size:1.02rem;'>YOLOv8 ตรวจพบลูกนกในตู้ 2 ตัว</div>
+                    <div style='color:#94a3b8; font-size:0.82rem; margin-top:4px;'>สถานะ: นอนหลับสบาย อุณหภูมิอบอุ่นพอเหมาะ</div>
+                    <div style='margin-top:12px; display:flex; gap:8px; flex-wrap:wrap; justify-content:center;'>
+                        <span style='background:rgba(34,197,94,0.2); color:#22c55e; padding:3px 10px; border-radius:8px; font-size:0.76rem;'>Bird #1: 38.2g (98%)</span>
+                        <span style='background:rgba(56,189,248,0.2); color:#38bdf8; padding:3px 10px; border-radius:8px; font-size:0.76rem;'>Bird #2: 40.3g (97%)</span>
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
+
+            st.markdown(f"""
+            <div style='font-size:0.8rem; color:{sub_color}; margin-top:8px;'>
+                💡 รองรับทั้งกล้อง USB Webcam, Pi Camera และกล้องมือถือ (กด Allow/อนุญาตสิทธิ์กล้องบนเบราว์เซอร์เพื่อดูภาพสด)
+            </div>
+            """, unsafe_allow_html=True)
 
     with row2_right:
         st.markdown(f"""<div class='info-card'>
@@ -2229,11 +2270,9 @@ with tab_settings:
 
             photo_bytes = None
             if photo_source == "📷 กล้องในตู้กก":
-                if st.button("📷 ถ่ายรูปตอนนี้", use_container_width=True):
-                    with st.spinner("กำลังถ่ายรูป..."):
-                        st.session_state.tg_snapshot = telegram_notifier.capture_camera_image()
-                    if st.session_state.tg_snapshot is None:
-                        st.warning("ไม่พบกล้อง — ต่อ Pi Camera หรือ USB Webcam ก่อน หรือเลือกรูปจากเครื่องแทน")
+                cam_snap = st.camera_input("ถ่ายภาพจากกล้องที่เชื่อมต่ออยู่", key="settings_cam_input")
+                if cam_snap is not None:
+                    st.session_state.tg_snapshot = cam_snap.getvalue()
                 photo_bytes = st.session_state.tg_snapshot
             else:
                 uploaded = st.file_uploader(
@@ -2243,9 +2282,8 @@ with tab_settings:
                 )
                 if uploaded is not None:
                     photo_bytes = uploaded.getvalue()
-
-            if photo_bytes:
-                st.image(photo_bytes, width="stretch")
+                if photo_bytes:
+                    st.image(photo_bytes, width="stretch")
 
         with photo_col2:
             attach_stats = st.toggle("📊 แนบค่าเซ็นเซอร์ปัจจุบัน", value=True)
