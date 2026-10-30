@@ -204,6 +204,17 @@ def init_db():
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )
     """)
+
+    # ตารางเก็บรหัสลับ OTP สำหรับกู้คืนรหัสผ่าน (เก็บลงฐานข้อมูลถาวร ไม่หายเมื่อหน้าเว็บรีรัน)
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS password_reset_otps (
+        username TEXT PRIMARY KEY,
+        otp_code TEXT NOT NULL,
+        expires_at REAL NOT NULL,
+        attempts INTEGER DEFAULT 0,
+        tg_cid TEXT DEFAULT ''
+    )
+    """)
     conn.commit()
     conn.close()
 
@@ -350,12 +361,12 @@ def authenticate_user(identifier, password):
     }
     return True, f"ยินดีต้อนรับกลับมา คุณ {row['display_name']}!", user_info
 
-# เก็บรหัสลับ OTP สำหรับกู้คืนรหัสผ่านทาง Telegram (อายุรหัส 5 นาที)
+# เก็บรหัสลับ OTP สำหรับกู้คืนรหัสผ่านทาง Telegram (เก็บลงทั้ง SQLite และ Firebase Cloud อายุรหัส 10 นาที)
 _password_reset_otps = {}  # {username: {"otp": str, "expires_at": float, "attempts": int, "tg_cid": str}}
-OTP_EXPIRE_SECONDS = 300
+OTP_EXPIRE_SECONDS = 600
 
 def request_password_reset_otp(identifier):
-    """ค้นหาบัญชีและส่งรหัสลับ OTP 6 หลักไปยัง Telegram ที่ผูกไว้กับบัญชีนั้น"""
+    """ค้นหาบัญชีและส่งรหัสลับ OTP 6 หลักไปยัง Telegram ที่ผูกไว้กับบัญชีนั้น (บันทึกถาวรลง SQLite + Firebase)"""
     init_db()
     ident = sanitize_input(identifier, 100).lower()
     if not ident:
@@ -377,9 +388,9 @@ def request_password_reset_otp(identifier):
         sync_all_accounts_with_cloud()
         conn = get_connection()
         row = _find_acc(conn)
-    conn.close()
 
     if not row:
+        conn.close()
         return False, f"ไม่พบบัญชี '{ident}' ในระบบ กรุณาตรวจสอบชื่อผู้ใช้หรืออีเมลอีกครั้งครับ", None
 
     try:
@@ -391,6 +402,7 @@ def request_password_reset_otp(identifier):
     tg_name = str(prefs.get("telegram_username", "")).strip() or "Telegram ของคุณ"
 
     if not tg_cid:
+        conn.close()
         return (
             False,
             f"บัญชี '{row['display_name']}' (@{row['username']}) ยังไม่ได้เชื่อมต่อกับ Telegram จึงไม่สามารถส่งรหัสลับ OTP ทาง Telegram ได้ครับ",
@@ -399,12 +411,35 @@ def request_password_reset_otp(identifier):
 
     # สร้างรหัสลับ OTP 6 หลักด้วยโมดูล secrets (Cryptographically Secure)
     otp_code = f"{secrets.randbelow(900000) + 100000}"
-    _password_reset_otps[row["username"]] = {
+    expires_ts = time.time() + OTP_EXPIRE_SECONDS
+    uname = row["username"]
+
+    otp_payload = {
         "otp": otp_code,
-        "expires_at": time.time() + OTP_EXPIRE_SECONDS,
+        "expires_at": expires_ts,
         "attempts": 0,
         "tg_cid": tg_cid
     }
+    _password_reset_otps[uname] = otp_payload
+
+    # 1. บันทึกลงตาราง SQLite ถาวร (ไม่หายแม้ Streamlit รีรันหน้าจอ)
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+        INSERT OR REPLACE INTO password_reset_otps (username, otp_code, expires_at, attempts, tg_cid)
+        VALUES (?, ?, ?, 0, ?)
+        """, (uname, otp_code, expires_ts, tg_cid))
+        # 2. บันทึกสำรองไว้ใน preferences_json และซิงค์ขึ้น Firebase Cloud ด้วย
+        prefs["_otp_data"] = otp_payload
+        prefs_str = json.dumps(prefs, ensure_ascii=False)
+        cur.execute("UPDATE user_accounts SET preferences_json = ? WHERE username = ?", (prefs_str, uname))
+        conn.commit()
+    except Exception:
+        pass
+    finally:
+        conn.close()
+
+    sync_account_to_cloud(uname, row["password_hash"], row["display_name"], row["email"], prefs, row["created_at"])
 
     # ส่งรหัสลับเข้า Telegram ของเจ้าของบัญชีทันที
     try:
@@ -412,11 +447,11 @@ def request_password_reset_otp(identifier):
         msg_html = (
             f"🔐 <b>รหัสลับกู้คืนรหัสผ่าน NestX Smart Brooder</b>\n"
             f"━━━━━━━━━━━━━━━━━━\n"
-            f"👤 <b>บัญชีผู้ใช้:</b> {row['display_name']} (@{row['username']})\n"
+            f"👤 <b>บัญชีผู้ใช้:</b> {row['display_name']} (@{uname})\n"
             f"🔑 <b>รหัสลับ OTP 6 หลักของคุณคือ:</b>\n\n"
             f"👉 <code>{otp_code}</code> 👈\n\n"
             f"━━━━━━━━━━━━━━━━━━\n"
-            f"⏳ <i>รหัสนี้มีอายุใช้งาน 5 นาที กรุณานำไปกรอกในหน้าเว็บเพื่อตั้งรหัสผ่านใหม่ (ห้ามบอกรหัสนี้กับผู้อื่น)</i>"
+            f"⏳ <i>รหัสนี้มีอายุใช้งาน 10 นาที กรุณานำไปกรอกในหน้าเว็บเพื่อตั้งรหัสผ่านใหม่ (ห้ามบอกรหัสนี้กับผู้อื่น)</i>"
         )
         ok, err_msg = telegram_notifier.send_telegram(msg_html, chat_id=tg_cid)
         if not ok:
@@ -427,11 +462,11 @@ def request_password_reset_otp(identifier):
     return (
         True,
         f"✈️ ส่งรหัสลับ OTP 6 หลักไปยัง Telegram ({tg_name}) เรียบร้อยแล้ว! กรุณาเปิดดูรหัสในแอป Telegram",
-        {"username": row["username"], "display_name": row["display_name"], "tg_name": tg_name}
+        {"username": uname, "display_name": row["display_name"], "tg_name": tg_name}
     )
 
 def verify_otp_and_reset_password(identifier, otp_input, new_password):
-    """ตรวจสอบรหัสลับ OTP 6 หลัก และตั้งรหัสผ่านใหม่พร้อมซิงค์ขึ้น Firebase Cloud"""
+    """ตรวจสอบรหัสลับ OTP 6 หลักจาก SQLite/Firebase Cloud และตั้งรหัสผ่านใหม่พร้อมซิงค์ออนไลน์ทันที"""
     init_db()
     ident = sanitize_input(identifier, 100).lower()
     otp_clean = str(otp_input).strip()
@@ -441,56 +476,117 @@ def verify_otp_and_reset_password(identifier, otp_input, new_password):
     if len(new_password) < 4:
         return False, "รหัสผ่านใหม่ต้องมีความยาวอย่างน้อย 4 ตัวอักษรครับ", None
 
+    def _find_acc(conn_obj):
+        c = conn_obj.cursor()
+        c.execute("""
+        SELECT username, password_hash, display_name, email, preferences_json, created_at
+        FROM user_accounts
+        WHERE LOWER(username) = ? OR LOWER(email) = ? OR LOWER(display_name) = ?
+        """, (ident, ident, ident))
+        return c.fetchone()
+
     conn = get_connection()
-    cur = conn.cursor()
-    cur.execute("""
-    SELECT username, password_hash, display_name, email, preferences_json, created_at
-    FROM user_accounts
-    WHERE LOWER(username) = ? OR LOWER(email) = ? OR LOWER(display_name) = ?
-    """, (ident, ident, ident))
-    row = cur.fetchone()
+    row = _find_acc(conn)
+    if not row:
+        conn.close()
+        sync_all_accounts_with_cloud()
+        conn = get_connection()
+        row = _find_acc(conn)
 
     if not row:
         conn.close()
         return False, "ไม่พบบัญชีผู้ใช้นี้ในระบบครับ", None
 
     uname = row["username"]
-    otp_record = _password_reset_otps.get(uname)
-    if not otp_record:
-        conn.close()
-        return False, "ยังไม่ได้ขอรหัส OTP หรือรหัสหมดอายุแล้ว กรุณากดขอรหัส OTP ใหม่อีกครั้งครับ", None
-
-    if time.time() > otp_record["expires_at"]:
-        _password_reset_otps.pop(uname, None)
-        conn.close()
-        return False, "⏰ รหัส OTP นี้หมดอายุแล้ว (เกิน 5 นาที) กรุณากดส่งรหัส OTP ใหม่ครับ", None
-
-    if not hmac.compare_digest(otp_clean, otp_record["otp"]):
-        otp_record["attempts"] += 1
-        if otp_record["attempts"] >= 5:
-            _password_reset_otps.pop(uname, None)
-            conn.close()
-            return False, "🚨 กรอกรหัส OTP ผิดเกิน 5 ครั้ง ระบบได้ยกเลิกรหัสชุดนี้แล้ว กรุณากดขอรหัสใหม่ครับ", None
-        rem = 5 - otp_record["attempts"]
-        conn.close()
-        return False, f"❌ รหัสลับ OTP ไม่ถูกต้อง กรุณาตรวจสอบใน Telegram อีกครั้ง (เหลือโอกาส {rem} ครั้ง)", None
-
-    # รหัส OTP ถูกต้อง -> เข้ารหัสรหัสผ่านใหม่ด้วย PBKDF2-HMAC-SHA256 + Random Salt
-    new_pw_hash = _hash_password(new_password)
-    cur.execute("UPDATE user_accounts SET password_hash = ? WHERE username = ?", (new_pw_hash, uname))
-    conn.commit()
-    conn.close()
-
-    # ลบรหัส OTP ที่ใช้แล้ว และปลดล็อค Brute-Force (ถ้ามี)
-    tg_cid = otp_record.get("tg_cid", "")
-    _password_reset_otps.pop(uname, None)
-    _failed_login_tracker.pop(uname, None)
-    _failed_login_tracker.pop(ident, None)
+    cur = conn.cursor()
 
     try:
         prefs = json.loads(row["preferences_json"] or "{}")
     except Exception:
         prefs = {}
+
+    # ดึงข้อมูล OTP จากตาราง SQLite ก่อน -> ถ้าไม่มีค่อยดึงจาก memory หรือ Firebase Cloud (_otp_data)
+    cur.execute("SELECT otp_code, expires_at, attempts, tg_cid FROM password_reset_otps WHERE username = ?", (uname,))
+    otp_row = cur.fetchone()
+
+    if otp_row:
+        otp_record = {
+            "otp": str(otp_row["otp_code"]),
+            "expires_at": float(otp_row["expires_at"]),
+            "attempts": int(otp_row["attempts"] or 0),
+            "tg_cid": str(otp_row["tg_cid"] or "")
+        }
+    elif uname in _password_reset_otps:
+        otp_record = _password_reset_otps[uname]
+    elif isinstance(prefs.get("_otp_data"), dict) and prefs["_otp_data"].get("otp"):
+        cloud_otp = prefs["_otp_data"]
+        otp_record = {
+            "otp": str(cloud_otp.get("otp", "")),
+            "expires_at": float(cloud_otp.get("expires_at", 0)),
+            "attempts": int(cloud_otp.get("attempts", 0)),
+            "tg_cid": str(cloud_otp.get("tg_cid", prefs.get("telegram_chat_id", "")))
+        }
+    else:
+        conn.close()
+        return False, "ยังไม่ได้ขอรหัส OTP หรือรหัสหมดอายุแล้ว กรุณากดขอรหัส OTP ใหม่อีกครั้งครับ", None
+
+    def _clear_otp_storage(conn_c):
+        _password_reset_otps.pop(uname, None)
+        try:
+            conn_c.execute("DELETE FROM password_reset_otps WHERE username = ?", (uname,))
+            if "_otp_data" in prefs:
+                prefs.pop("_otp_data", None)
+                conn_c.execute(
+                    "UPDATE user_accounts SET preferences_json = ? WHERE username = ?",
+                    (json.dumps(prefs, ensure_ascii=False), uname)
+                )
+            conn.commit()
+        except Exception:
+            pass
+
+    if time.time() > otp_record["expires_at"]:
+        _clear_otp_storage(cur)
+        conn.close()
+        return False, "⏰ รหัส OTP นี้หมดอายุแล้ว (เกิน 10 นาที) กรุณากดส่งรหัส OTP ใหม่ครับ", None
+
+    if not hmac.compare_digest(otp_clean, otp_record["otp"]):
+        otp_record["attempts"] += 1
+        if otp_record["attempts"] >= 5:
+            _clear_otp_storage(cur)
+            conn.close()
+            return False, "🚨 กรอกรหัส OTP ผิดเกิน 5 ครั้ง ระบบได้ยกเลิกรหัสชุดนี้แล้ว กรุณากดขอรหัสใหม่ครับ", None
+        rem = 5 - otp_record["attempts"]
+        try:
+            cur.execute("UPDATE password_reset_otps SET attempts = ? WHERE username = ?", (otp_record["attempts"], uname))
+            if "_otp_data" in prefs and isinstance(prefs["_otp_data"], dict):
+                prefs["_otp_data"]["attempts"] = otp_record["attempts"]
+                cur.execute(
+                    "UPDATE user_accounts SET preferences_json = ? WHERE username = ?",
+                    (json.dumps(prefs, ensure_ascii=False), uname)
+                )
+            conn.commit()
+        except Exception:
+            pass
+        conn.close()
+        return False, f"❌ รหัสลับ OTP ไม่ถูกต้อง กรุณาตรวจสอบใน Telegram อีกครั้ง (เหลือโอกาส {rem} ครั้ง)", None
+
+    # รหัส OTP ถูกต้อง -> เข้ารหัสรหัสผ่านใหม่ด้วย PBKDF2-HMAC-SHA256 + Random Salt
+    new_pw_hash = _hash_password(new_password)
+    prefs.pop("_otp_data", None)
+    prefs_clean_str = json.dumps(prefs, ensure_ascii=False)
+    cur.execute(
+        "UPDATE user_accounts SET password_hash = ?, preferences_json = ? WHERE username = ?",
+        (new_pw_hash, prefs_clean_str, uname)
+    )
+    cur.execute("DELETE FROM password_reset_otps WHERE username = ?", (uname,))
+    conn.commit()
+    conn.close()
+
+    # ลบรหัส OTP ที่ใช้แล้ว และปลดล็อค Brute-Force (ถ้ามี)
+    tg_cid = otp_record.get("tg_cid", "") or str(prefs.get("telegram_chat_id", "")).strip()
+    _password_reset_otps.pop(uname, None)
+    _failed_login_tracker.pop(uname, None)
+    _failed_login_tracker.pop(ident, None)
 
     # ซิงค์รหัสผ่านใหม่ขึ้น Firebase Cloud ออนไลน์ทันที
     sync_account_to_cloud(uname, new_pw_hash, row["display_name"], row["email"], prefs, row["created_at"])

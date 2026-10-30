@@ -33,11 +33,6 @@ except BaseException:
 
 import db_manager
 import telegram_notifier
-try:
-    importlib.reload(db_manager)
-    importlib.reload(telegram_notifier)
-except BaseException:
-    pass
 
 # ==========================================
 # 1. เชื่อมต่อ Firebase Realtime Database (รองรับทั้งไฟล์ในเครื่องและ Streamlit Secrets)
@@ -1021,6 +1016,7 @@ if not user_pref.get("account_logged_in", False):
                         ok_otp, msg_otp, otp_info = db_manager.request_password_reset_otp(fp_user.strip())
                         if ok_otp and otp_info:
                             st.session_state["otp_sent_for_user"] = otp_info["username"]
+                            st.session_state["forgot_target_user"] = otp_info["username"]
                             st.session_state["otp_sent_msg"] = msg_otp
                             st.toast(msg_otp)
                         else:
@@ -1043,7 +1039,7 @@ if not user_pref.get("account_logged_in", False):
                     fp_new_p2 = st.text_input("ยืนยันรหัสผ่านใหม่*:", type="password", placeholder="กรอกรหัสผ่านใหม่ซ้ำ", key="gate_fp_np2")
 
                 if st.button("✅ ยืนยันรหัส OTP และตั้งรหัสผ่านใหม่ทันที", type="primary", use_container_width=True, key="gate_btn_verify_otp"):
-                    target_ident = fp_user.strip() or st.session_state.get("otp_sent_for_user", "")
+                    target_ident = st.session_state.get("otp_sent_for_user", "") or fp_user.strip()
                     if not target_ident or not fp_otp.strip() or not fp_new_p1:
                         st.warning("กรุณากรอกชื่อผู้ใช้, รหัส OTP 6 หลัก และรหัสผ่านใหม่ให้ครบถ้วนครับ")
                     elif fp_new_p1 != fp_new_p2:
