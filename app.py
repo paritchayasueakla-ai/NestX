@@ -4,36 +4,64 @@ import numpy as np
 import time
 from datetime import datetime
 import os
-import serial
 import json
 import html
 import plotly.graph_objects as go
 import streamlit.components.v1 as components
-import firebase_admin
-from firebase_admin import credentials
-from firebase_admin import db
 import importlib
-import db_manager
-import telegram_notifier
-importlib.reload(db_manager)
-importlib.reload(telegram_notifier)
 
 # ==========================================
-# 1. เชื่อมต่อ Firebase Realtime Database
+# 0. ตั้งค่าหน้าจอ (ต้องเป็นคำสั่งแรกสุดของ Streamlit เสมอเพื่อป้องกัน Error บน Cloud)
 # ==========================================
-if not firebase_admin._apps:
+st.set_page_config(
+    page_title="NestX Smart Brooder",
+    page_icon="🐣",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
+try:
+    import serial
+except BaseException:
+    serial = None
+
+try:
+    import firebase_admin
+    from firebase_admin import credentials, db
+except BaseException:
+    firebase_admin = None
+
+import db_manager
+import telegram_notifier
+try:
+    importlib.reload(db_manager)
+    importlib.reload(telegram_notifier)
+except BaseException:
+    pass
+
+# ==========================================
+# 1. เชื่อมต่อ Firebase Realtime Database (รองรับทั้งไฟล์ในเครื่องและ Streamlit Secrets)
+# ==========================================
+if firebase_admin is not None and not firebase_admin._apps:
     try:
         if os.path.exists('firebase_key.json'):
             cred = credentials.Certificate('firebase_key.json')
             firebase_admin.initialize_app(cred, {
                 'databaseURL': 'https://angry-bird-56bc6-default-rtdb.asia-southeast1.firebasedatabase.app/'
             })
-        elif "firebase_key" in st.secrets:
-            cred = credentials.Certificate(dict(st.secrets["firebase_key"]))
-            firebase_admin.initialize_app(cred, {
-                'databaseURL': 'https://angry-bird-56bc6-default-rtdb.asia-southeast1.firebasedatabase.app/'
-            })
-    except Exception:
+        else:
+            try:
+                if "firebase_key" in st.secrets:
+                    key_dict = dict(st.secrets["firebase_key"])
+                    if "private_key" in key_dict and isinstance(key_dict["private_key"], str):
+                        key_dict["private_key"] = key_dict["private_key"].replace("\\n", "\n")
+                    cred = credentials.Certificate(key_dict)
+                    firebase_admin.initialize_app(cred, {
+                        'databaseURL': 'https://angry-bird-56bc6-default-rtdb.asia-southeast1.firebasedatabase.app/'
+                    })
+            except BaseException:
+                pass
+    except BaseException:
         pass
 
 # ==========================================
@@ -81,18 +109,21 @@ def load_pref():
                 data = json.load(f)
                 default_pref.update(data)
                 return default_pref
-        except Exception:
+        except BaseException:
             pass
     return default_pref
 
 def save_pref(data):
-    with open(PREF_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-    # บันทึกข้อมูลการตั้งค่าแยกตามบัญชีผู้ใช้งานลงในฐานข้อมูล SQLite (brooder_data.db)
+    try:
+        with open(PREF_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except BaseException:
+        pass
+    # บันทึกข้อมูลการตั้งค่าแยกตามบัญชีผู้ใช้งานลงในฐานข้อมูล SQLite & Firebase Cloud
     if data.get("account_logged_in") and data.get("account_username"):
         try:
             db_manager.save_user_account_prefs(data["account_username"], data)
-        except Exception:
+        except BaseException:
             pass
 
 user_pref = load_pref()
@@ -100,8 +131,9 @@ user_pref = load_pref()
 # ซิงค์ข้อมูลบัญชีกับ Firebase Cloud ออนไลน์เมื่อเปิดแอปครั้งแรกของเซสชัน
 if "cloud_accounts_synced" not in st.session_state:
     try:
-        db_manager.sync_all_accounts_with_cloud()
-    except Exception:
+        if hasattr(db_manager, "sync_all_accounts_with_cloud"):
+            db_manager.sync_all_accounts_with_cloud()
+    except BaseException:
         pass
     st.session_state.cloud_accounts_synced = True
 
@@ -114,7 +146,6 @@ if user_pref.get("account_logged_in") and user_pref.get("account_username"):
             user_pref.update(acc_prefs)
             user_pref["account_logged_in"] = True
         else:
-            # สร้างบัญชีเริ่มต้นใน SQLite ให้ทันทีเพื่อเก็บข้อมูลปัจจุบันไว้ไม่ให้หาย
             db_manager.register_user(
                 username=cur_uname,
                 password="1234",
@@ -122,18 +153,8 @@ if user_pref.get("account_logged_in") and user_pref.get("account_username"):
                 email=user_pref.get("account_email", ""),
                 initial_prefs=user_pref
             )
-    except Exception:
+    except BaseException:
         pass
-
-# ==========================================
-# 3. ตั้งค่าหน้าจอและชุดฟอนต์ (Streamlit Page Config)
-# ==========================================
-st.set_page_config(
-    page_title=user_pref.get("farm_name", "AI Smart Brooder"),
-    page_icon="🐣",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
 
 # สูตรการกกสำเร็จรูป
 PRESETS = {
@@ -150,10 +171,12 @@ if "tare_offset" not in st.session_state:
 
 @st.cache_resource
 def init_connection():
+    if serial is None:
+        return None
     try:
         ser = serial.Serial(PORT, BAUD_RATE, timeout=0.5)
         return ser
-    except Exception:
+    except BaseException:
         return None
 
 ser = init_connection()
@@ -809,9 +832,18 @@ if not user_pref.get("account_logged_in", False):
             </div>
             """, unsafe_allow_html=True)
 
+            gate_options = [
+                "🔑 เข้าสู่ระบบ (Sign In)",
+                "📝 สมัครบัญชีใหม่ (Sign Up)",
+                "🔓 กู้รหัสผ่าน (Telegram OTP)"
+            ]
+            if st.session_state.get("jump_to_forgot_pw"):
+                st.session_state["gate_auth_radio"] = "🔓 กู้รหัสผ่าน (Telegram OTP)"
+                st.session_state["jump_to_forgot_pw"] = False
+
             gate_mode = st.radio(
                 "เลือกโหมดการเข้าใช้งาน",
-                ["🔑 เข้าสู่ระบบ (Sign In)", "📝 สมัครบัญชีใหม่ (Sign Up)"],
+                gate_options,
                 horizontal=True,
                 label_visibility="collapsed",
                 key="gate_auth_radio"
@@ -823,44 +855,52 @@ if not user_pref.get("account_logged_in", False):
                 g_pass = st.text_input("รหัสผ่าน (Password):", type="password", placeholder="กรอกรหัสผ่านของคุณ", key="gate_login_pass")
                 st.markdown("<div style='height:4px;'></div>", unsafe_allow_html=True)
 
-                if st.button("🚀 เข้าสู่ระบบ (Sign In)", type="primary", use_container_width=True, key="gate_btn_signin"):
-                    if not g_user.strip() or not g_pass:
-                        st.warning("กรุณากรอกชื่อผู้ใช้/อีเมล และรหัสผ่านให้ครบครับ")
-                    else:
-                        ok, msg, acc_info = db_manager.authenticate_user(g_user, g_pass)
-                        if ok and acc_info:
-                            saved_p = acc_info.get("preferences", {})
-                            clean_acct_defaults = {
-                                "farm_name": saved_p.get("farm_name", f"ฟาร์มของ {acc_info['display_name']}"),
-                                "telegram_chat_id": saved_p.get("telegram_chat_id", ""),
-                                "telegram_username": saved_p.get("telegram_username", ""),
-                                "tg_alert_enabled": saved_p.get("tg_alert_enabled", True),
-                                "tg_daily_enabled": saved_p.get("tg_daily_enabled", True),
-                                "line_connected": saved_p.get("line_connected", False),
-                                "line_name": saved_p.get("line_name", ""),
-                                "line_token": saved_p.get("line_token", ""),
-                                "line_user_id": saved_p.get("line_user_id", ""),
-                                "discord_connected": saved_p.get("discord_connected", False),
-                                "discord_name": saved_p.get("discord_name", ""),
-                                "discord_webhook": saved_p.get("discord_webhook", ""),
-                                "email_connected": saved_p.get("email_connected", False),
-                                "email_address": saved_p.get("email_address", acc_info.get("email", "")),
-                                "temp_min": saved_p.get("temp_min", 35.0),
-                                "temp_max": saved_p.get("temp_max", 36.8),
-                                "hum_min": saved_p.get("hum_min", 50),
-                                "hum_max": saved_p.get("hum_max", 65),
-                                "account_logged_in": True,
-                                "account_username": acc_info["username"],
-                                "account_display_name": acc_info["display_name"],
-                                "account_email": acc_info.get("email", "")
-                            }
-                            user_pref.update(clean_acct_defaults)
-                            save_pref(user_pref)
-                            st.toast("✅ " + msg)
-                            time.sleep(0.4)
-                            st.rerun()
+                btn_si_col, btn_fp_col = st.columns([1.6, 1])
+                with btn_si_col:
+                    if st.button("🚀 เข้าสู่ระบบ (Sign In)", type="primary", use_container_width=True, key="gate_btn_signin"):
+                        if not g_user.strip() or not g_pass:
+                            st.warning("กรุณากรอกชื่อผู้ใช้/อีเมล และรหัสผ่านให้ครบครับ")
                         else:
-                            st.error(msg)
+                            ok, msg, acc_info = db_manager.authenticate_user(g_user, g_pass)
+                            if ok and acc_info:
+                                saved_p = acc_info.get("preferences", {})
+                                clean_acct_defaults = {
+                                    "farm_name": saved_p.get("farm_name", f"ฟาร์มของ {acc_info['display_name']}"),
+                                    "telegram_chat_id": saved_p.get("telegram_chat_id", ""),
+                                    "telegram_username": saved_p.get("telegram_username", ""),
+                                    "tg_alert_enabled": saved_p.get("tg_alert_enabled", True),
+                                    "tg_daily_enabled": saved_p.get("tg_daily_enabled", True),
+                                    "line_connected": saved_p.get("line_connected", False),
+                                    "line_name": saved_p.get("line_name", ""),
+                                    "line_token": saved_p.get("line_token", ""),
+                                    "line_user_id": saved_p.get("line_user_id", ""),
+                                    "discord_connected": saved_p.get("discord_connected", False),
+                                    "discord_name": saved_p.get("discord_name", ""),
+                                    "discord_webhook": saved_p.get("discord_webhook", ""),
+                                    "email_connected": saved_p.get("email_connected", False),
+                                    "email_address": saved_p.get("email_address", acc_info.get("email", "")),
+                                    "temp_min": saved_p.get("temp_min", 35.0),
+                                    "temp_max": saved_p.get("temp_max", 36.8),
+                                    "hum_min": saved_p.get("hum_min", 50),
+                                    "hum_max": saved_p.get("hum_max", 65),
+                                    "account_logged_in": True,
+                                    "account_username": acc_info["username"],
+                                    "account_display_name": acc_info["display_name"],
+                                    "account_email": acc_info.get("email", "")
+                                }
+                                user_pref.update(clean_acct_defaults)
+                                save_pref(user_pref)
+                                st.toast("✅ " + msg)
+                                time.sleep(0.4)
+                                st.rerun()
+                            else:
+                                st.error(msg)
+                with btn_fp_col:
+                    if st.button("🔓 ลืมรหัสผ่าน?", use_container_width=True, key="gate_btn_jump_forgot", help="กู้คืนรหัสผ่านด้วยรหัสลับ OTP ทาง Telegram"):
+                        if g_user.strip():
+                            st.session_state["forgot_target_user"] = g_user.strip()
+                        st.session_state["jump_to_forgot_pw"] = True
+                        st.rerun()
 
                 all_accs = db_manager.list_all_accounts()
                 if all_accs:
@@ -874,7 +914,7 @@ if not user_pref.get("account_logged_in", False):
                     acc_names = " &nbsp;•&nbsp; ".join(acc_badges)
                     st.markdown(f"<div style='font-size:0.8rem; color:{sub_color}; margin-top:12px; text-align:center;'>📋 บัญชีที่บันทึกในระบบแล้ว (ล็อกอินด้วยชื่อผู้ใช้หรืออีเมลได้เลย):<br>{acc_names}</div>", unsafe_allow_html=True)
 
-            else:
+            elif gate_mode == "📝 สมัครบัญชีใหม่ (Sign Up)":
                 g_reg_user = st.text_input("ตั้งชื่อผู้ใช้ (Username สำหรับล็อกอิน)*:", placeholder="เช่น farm_a หรือ somchai", key="gate_reg_user")
                 g_reg_disp = st.text_input("ชื่อฟาร์ม / ชื่อที่แสดง (Display Name)*:", placeholder="เช่น ฟาร์มนกแก้วสมชาย", key="gate_reg_disp")
                 g_reg_email = st.text_input("อีเมล (Email - ไม่บังคับ):", placeholder="เช่น somchai@gmail.com", key="gate_reg_email")
@@ -926,6 +966,99 @@ if not user_pref.get("account_logged_in", False):
                             st.rerun()
                         else:
                             st.error(msg)
+
+            else:
+                # 🔓 โหมดกู้คืนรหัสผ่านผ่าน Telegram OTP (Forgot Password via Telegram)
+                st.markdown(f"""
+                <div style='background:rgba(56,189,248,0.1); border:1px solid rgba(56,189,248,0.3); border-radius:12px; padding:12px 14px; margin-bottom:12px;'>
+                    <div style='font-weight:700; color:#38bdf8; font-size:0.96rem;'>✈️ กู้คืนรหัสผ่านผ่านแอป Telegram (OTP 6 หลัก)</div>
+                    <div style='font-size:0.82rem; color:{sub_color}; margin-top:3px;'>
+                        หากบัญชีของคุณเคยผูก Telegram (@TheNestXBot) ไว้ ระบบจะส่ง <b>รหัสลับ OTP 6 หลัก</b> เข้าแชต Telegram ของคุณเพื่อใช้ตั้งรหัสผ่านใหม่ทันทีครับ
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
+
+                default_forgot_u = st.session_state.get("forgot_target_user", "")
+                fp_user = st.text_input(
+                    "1️⃣ กรอกชื่อผู้ใช้ หรือ อีเมล ของบัญชีที่ต้องการกู้รหัสผ่าน:",
+                    value=default_forgot_u,
+                    placeholder="เช่น xuelihkl หรือ paritchayasueakla@gmail.com",
+                    key="gate_fp_user_input"
+                )
+
+                if st.button("📨 ส่งรหัสลับ OTP 6 หลักเข้า Telegram ของฉัน", use_container_width=True, key="gate_btn_send_otp"):
+                    if not fp_user.strip():
+                        st.warning("กรุณากรอกชื่อผู้ใช้หรืออีเมลก่อนกดรับรหัส OTP ครับ")
+                    else:
+                        ok_otp, msg_otp, otp_info = db_manager.request_password_reset_otp(fp_user.strip())
+                        if ok_otp and otp_info:
+                            st.session_state["otp_sent_for_user"] = otp_info["username"]
+                            st.session_state["otp_sent_msg"] = msg_otp
+                            st.toast(msg_otp)
+                        else:
+                            st.error(msg_otp)
+
+                if st.session_state.get("otp_sent_msg") and st.session_state.get("otp_sent_for_user"):
+                    st.success(st.session_state["otp_sent_msg"])
+
+                st.markdown("<hr style='margin:12px 0; border-color:rgba(148,163,184,0.2);'>", unsafe_allow_html=True)
+                fp_otp = st.text_input(
+                    "2️⃣ กรอกรหัสลับ OTP 6 หลัก (ที่ได้รับใน Telegram):",
+                    placeholder="เช่น 482910",
+                    max_chars=6,
+                    key="gate_fp_otp_code"
+                )
+                np_col1, np_col2 = st.columns(2)
+                with np_col1:
+                    fp_new_p1 = st.text_input("ตั้งรหัสผ่านใหม่*:", type="password", placeholder="อย่างน้อย 4 ตัวอักษร", key="gate_fp_np1")
+                with np_col2:
+                    fp_new_p2 = st.text_input("ยืนยันรหัสผ่านใหม่*:", type="password", placeholder="กรอกรหัสผ่านใหม่ซ้ำ", key="gate_fp_np2")
+
+                if st.button("✅ ยืนยันรหัส OTP และตั้งรหัสผ่านใหม่ทันที", type="primary", use_container_width=True, key="gate_btn_verify_otp"):
+                    target_ident = fp_user.strip() or st.session_state.get("otp_sent_for_user", "")
+                    if not target_ident or not fp_otp.strip() or not fp_new_p1:
+                        st.warning("กรุณากรอกชื่อผู้ใช้, รหัส OTP 6 หลัก และรหัสผ่านใหม่ให้ครบถ้วนครับ")
+                    elif fp_new_p1 != fp_new_p2:
+                        st.error("รหัสผ่านใหม่ทั้ง 2 ช่องไม่ตรงกัน กรุณาตรวจสอบอีกครั้งครับ")
+                    else:
+                        ok_rst, msg_rst, rst_acc_info = db_manager.verify_otp_and_reset_password(
+                            target_ident, fp_otp.strip(), fp_new_p1
+                        )
+                        if ok_rst and rst_acc_info:
+                            st.session_state.pop("otp_sent_for_user", None)
+                            st.session_state.pop("otp_sent_msg", None)
+                            saved_p = rst_acc_info.get("preferences", {})
+                            clean_acct_defaults = {
+                                "farm_name": saved_p.get("farm_name", f"ฟาร์มของ {rst_acc_info['display_name']}"),
+                                "telegram_chat_id": saved_p.get("telegram_chat_id", ""),
+                                "telegram_username": saved_p.get("telegram_username", ""),
+                                "tg_alert_enabled": saved_p.get("tg_alert_enabled", True),
+                                "tg_daily_enabled": saved_p.get("tg_daily_enabled", True),
+                                "line_connected": saved_p.get("line_connected", False),
+                                "line_name": saved_p.get("line_name", ""),
+                                "line_token": saved_p.get("line_token", ""),
+                                "line_user_id": saved_p.get("line_user_id", ""),
+                                "discord_connected": saved_p.get("discord_connected", False),
+                                "discord_name": saved_p.get("discord_name", ""),
+                                "discord_webhook": saved_p.get("discord_webhook", ""),
+                                "email_connected": saved_p.get("email_connected", False),
+                                "email_address": saved_p.get("email_address", rst_acc_info.get("email", "")),
+                                "temp_min": saved_p.get("temp_min", 35.0),
+                                "temp_max": saved_p.get("temp_max", 36.8),
+                                "hum_min": saved_p.get("hum_min", 50),
+                                "hum_max": saved_p.get("hum_max", 65),
+                                "account_logged_in": True,
+                                "account_username": rst_acc_info["username"],
+                                "account_display_name": rst_acc_info["display_name"],
+                                "account_email": rst_acc_info.get("email", "")
+                            }
+                            user_pref.update(clean_acct_defaults)
+                            save_pref(user_pref)
+                            st.toast(msg_rst)
+                            time.sleep(0.5)
+                            st.rerun()
+                        else:
+                            st.error(msg_rst)
 
             st.markdown(f"<div style='text-align:center; font-size:0.78rem; color:{sub_color}; margin-top:14px;'>🔒 ระบบจะจดจำการเข้าสู่ระบบของคุณไว้อัตโนมัติ ไม่ต้องล็อกอินซ้ำในการเข้าใช้งานครั้งถัดไป</div>", unsafe_allow_html=True)
 
