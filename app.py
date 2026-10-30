@@ -65,12 +65,47 @@ if firebase_admin is not None and not firebase_admin._apps:
         pass
 
 # ==========================================
-# 2. จัดการข้อมูลการตั้งค่า (Settings & Preferences)
+# 2. จัดการข้อมูลการตั้งค่าแบบแยกเซสชันรายเครื่อง (Per-Browser Session Isolation)
+# ป้องกันไม่ให้บัญชีของคนอื่นที่ล็อกอินจากเครื่องอื่นมาปนกับเครื่องของเรา 100%
 # ==========================================
-PREF_FILE = "user_preferences.json"
+import hashlib
+import hmac
 
-def load_pref():
-    default_pref = {
+PREF_FILE = "user_preferences.json"
+_SESSION_SECRET = "nestx_brooder_hmac_secret_2026_key"
+
+# ลบไฟล์เซสชันรวมตัวเก่าที่อาจค้างอยู่บนเซิร์ฟเวอร์ เพื่อป้องกันไม่ให้บัญชีคนอื่นค้างข้ามเครื่อง
+if os.path.exists(PREF_FILE):
+    try:
+        os.remove(PREF_FILE)
+    except BaseException:
+        pass
+
+def _make_auth_token(username: str) -> str:
+    uname = str(username).strip().lower()
+    sig = hmac.new(_SESSION_SECRET.encode("utf-8"), uname.encode("utf-8"), hashlib.sha256).hexdigest()[:18]
+    return f"{uname}.{sig}"
+
+def _verify_auth_token(token: str) -> str:
+    if not token or "." not in str(token):
+        return ""
+    uname, sig = str(token).rsplit(".", 1)
+    expected = hmac.new(_SESSION_SECRET.encode("utf-8"), uname.encode("utf-8"), hashlib.sha256).hexdigest()[:18]
+    if hmac.compare_digest(sig, expected):
+        return uname
+    return ""
+
+# ซิงค์ข้อมูลบัญชีกับ Firebase Cloud ออนไลน์เมื่อเปิดแอปครั้งแรกของเซสชันนี้
+if "cloud_accounts_synced" not in st.session_state:
+    try:
+        if hasattr(db_manager, "sync_all_accounts_with_cloud"):
+            db_manager.sync_all_accounts_with_cloud()
+    except BaseException:
+        pass
+    st.session_state.cloud_accounts_synced = True
+
+def _get_default_pref():
+    return {
         "farm_name": "NestX",
         "theme": "dark",
         "elec_rate": 4.5,
@@ -103,58 +138,66 @@ def load_pref():
         "account_username": "",
         "account_email": ""
     }
-    if os.path.exists(PREF_FILE):
-        try:
-            with open(PREF_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                default_pref.update(data)
-                return default_pref
-        except BaseException:
-            pass
-    return default_pref
 
-def save_pref(data):
+def load_pref():
+    # 1. ใช้ข้อมูลเฉพาะของเบราว์เซอร์เครื่องนี้เท่านั้น (st.session_state) ไม่ดึงไฟล์รวมของเซิร์ฟเวอร์มาปนกัน
+    if "session_user_pref" in st.session_state:
+        return st.session_state["session_user_pref"]
+
+    pref = _get_default_pref()
+
+    # 2. ตรวจสอบว่าเบราว์เซอร์เครื่องนี้มี Auth Token ของตัวเองหรือไม่ (กรณีผู้ใช้กด Refresh หน้าเว็บเดิมของตัวเอง)
     try:
-        with open(PREF_FILE, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+        auth_tok = st.query_params.get("auth", "")
+        verified_uname = _verify_auth_token(auth_tok)
+        if verified_uname:
+            acc_prefs = db_manager.get_user_account_prefs(verified_uname)
+            if acc_prefs:
+                pref.update(acc_prefs)
+                pref["account_logged_in"] = True
+                pref["account_username"] = verified_uname
     except BaseException:
         pass
-    # บันทึกข้อมูลการตั้งค่าแยกตามบัญชีผู้ใช้งานลงในฐานข้อมูล SQLite & Firebase Cloud
+
+    st.session_state["session_user_pref"] = pref
+    return pref
+
+def save_pref(data):
+    # บันทึกไว้ในเซสชันเฉพาะเบราว์เซอร์ของเครื่องนี้
+    st.session_state["session_user_pref"] = data
+
+    # หากล็อกอินอยู่ ให้บันทึกข้อมูลลงฐานข้อมูลของบัญชีตัวเอง (SQLite + Firebase Cloud) และผูก Token เฉพาะเบราว์เซอร์นี้
     if data.get("account_logged_in") and data.get("account_username"):
+        uname = data["account_username"]
+        try:
+            st.query_params["auth"] = _make_auth_token(uname)
+        except BaseException:
+            pass
+        try:
+            db_manager.save_user_account_prefs(uname, data)
+        except BaseException:
+            pass
+    else:
+        try:
+            if "auth" in st.query_params:
+                del st.query_params["auth"]
+        except BaseException:
+            pass
+
+def logout_current_user(data):
+    """ออกจากระบบเฉพาะเครื่องนี้โดยไม่กระทบคนอื่น"""
+    if data.get("account_username"):
         try:
             db_manager.save_user_account_prefs(data["account_username"], data)
         except BaseException:
             pass
+    st.session_state["session_user_pref"] = _get_default_pref()
+    try:
+        st.query_params.clear()
+    except BaseException:
+        pass
 
 user_pref = load_pref()
-
-# ซิงค์ข้อมูลบัญชีกับ Firebase Cloud ออนไลน์เมื่อเปิดแอปครั้งแรกของเซสชัน
-if "cloud_accounts_synced" not in st.session_state:
-    try:
-        if hasattr(db_manager, "sync_all_accounts_with_cloud"):
-            db_manager.sync_all_accounts_with_cloud()
-    except BaseException:
-        pass
-    st.session_state.cloud_accounts_synced = True
-
-# ซิงค์ข้อมูลของบัญชีที่กำลังล็อกอินอยู่จากฐานข้อมูล (ถ้ายังไม่มีใน DB ให้สร้างให้อัตโนมัติ)
-if user_pref.get("account_logged_in") and user_pref.get("account_username"):
-    try:
-        cur_uname = user_pref["account_username"]
-        acc_prefs = db_manager.get_user_account_prefs(cur_uname)
-        if acc_prefs:
-            user_pref.update(acc_prefs)
-            user_pref["account_logged_in"] = True
-        else:
-            db_manager.register_user(
-                username=cur_uname,
-                password="1234",
-                display_name=user_pref.get("account_display_name", cur_uname),
-                email=user_pref.get("account_email", ""),
-                initial_prefs=user_pref
-            )
-    except BaseException:
-        pass
 
 # สูตรการกกสำเร็จรูป
 PRESETS = {
@@ -277,12 +320,9 @@ if user_pref.get("account_logged_in", False):
             save_pref(user_pref)
             st.rerun()
 
-        # 🚪 ปุ่มออกจากระบบใน Sidebar
+        # 🚪 ปุ่มออกจากระบบใน Sidebar (ออกเฉพาะเบราว์เซอร์เครื่องนี้)
         if st.button("🚪 ออกจากระบบ (Log Out)", use_container_width=True):
-            save_pref(user_pref)
-            user_pref["account_logged_in"] = False
-            with open(PREF_FILE, "w", encoding="utf-8") as f:
-                json.dump(user_pref, f, ensure_ascii=False, indent=2)
+            logout_current_user(user_pref)
             st.rerun()
 
 # ==========================================
@@ -901,18 +941,6 @@ if not user_pref.get("account_logged_in", False):
                             st.session_state["forgot_target_user"] = g_user.strip()
                         st.session_state["jump_to_forgot_pw"] = True
                         st.rerun()
-
-                all_accs = db_manager.list_all_accounts()
-                if all_accs:
-                    acc_badges = []
-                    for a in all_accs:
-                        safe_u = html.escape(str(a.get("username", "")))
-                        safe_d = html.escape(str(a.get("display_name", "")))
-                        safe_e = html.escape(str(a.get("email", "")))
-                        em_txt = f" | {safe_e}" if safe_e else ""
-                        acc_badges.append(f"<b>{safe_u}</b> ({safe_d}{em_txt})")
-                    acc_names = " &nbsp;•&nbsp; ".join(acc_badges)
-                    st.markdown(f"<div style='font-size:0.8rem; color:{sub_color}; margin-top:12px; text-align:center;'>📋 บัญชีที่บันทึกในระบบแล้ว (ล็อกอินด้วยชื่อผู้ใช้หรืออีเมลได้เลย):<br>{acc_names}</div>", unsafe_allow_html=True)
 
             elif gate_mode == "📝 สมัครบัญชีใหม่ (Sign Up)":
                 g_reg_user = st.text_input("ตั้งชื่อผู้ใช้ (Username สำหรับล็อกอิน)*:", placeholder="เช่น farm_a หรือ somchai", key="gate_reg_user")
@@ -1694,11 +1722,7 @@ with tab_account:
                 """, unsafe_allow_html=True)
             with acc_col2:
                 if st.button("🔄 สลับบัญชี / ออกจากระบบ", use_container_width=True):
-                    # บันทึกค่าของบัญชีปัจจุบันลงฐานข้อมูลก่อนออก
-                    save_pref(user_pref)
-                    user_pref["account_logged_in"] = False
-                    with open(PREF_FILE, "w", encoding="utf-8") as f:
-                        json.dump(user_pref, f, ensure_ascii=False, indent=2)
+                    logout_current_user(user_pref)
                     st.toast("ออกจากระบบเรียบร้อย สามารถเข้าสู่ระบบบัญชีอื่นหรือสมัครใหม่ได้เลยครับ")
                     st.rerun()
 
